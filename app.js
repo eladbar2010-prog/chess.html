@@ -361,14 +361,19 @@ function checkGameOver() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Stockfish engine
+// Stockfish 16 engine
 // ─────────────────────────────────────────────────────────────────────────────
-let stockfish = null;
-let sfCallback = null;
+let stockfish    = null;
+let sfCallback   = null;
+let sfPonder     = { active: false, move: null };
+let sfPonderNext = null;
 
 function handleStockfishMsg(e) {
   const msg = typeof e.data === 'string' ? e.data : String(e.data || '');
-  if (sfCallback && sfCallback(msg)) sfCallback = null;
+  if (!sfCallback) return;
+  const cb = sfCallback;
+  sfCallback = null;             // clear before calling so cb can set a new one
+  if (!cb(msg)) sfCallback = cb; // restore if not consumed
 }
 
 function sfWaitFor(predicate, command) {
@@ -380,42 +385,97 @@ function sfWaitFor(predicate, command) {
 
 async function initStockfish() {
   try {
-    document.getElementById('aiLog').textContent = 'Loading Stockfish engine...';
-    const blob = await fetch(
-      'https://cdnjs.cloudflare.com/ajax/libs/stockfish.js/10.0.2/stockfish.js'
-    ).then(r => r.blob());
-    stockfish = new Worker(URL.createObjectURL(blob));
+    document.getElementById('aiLog').textContent = 'Loading Stockfish 16...';
+    const SF_CDN = 'https://cdn.jsdelivr.net/npm/stockfish@16.0.0/src/';
+    const workerCode = [
+      'self.Module = { locateFile: p => "' + SF_CDN + '" + p };',
+      'importScripts("' + SF_CDN + 'stockfish-sse.js");',
+    ].join('\n');
+    stockfish = new Worker(URL.createObjectURL(new Blob([workerCode], { type: 'text/javascript' })));
     stockfish.onmessage = handleStockfishMsg;
     await sfWaitFor(m => m === 'uciok', 'uci');
-    stockfish.postMessage('setoption name Skill Level value 20');
+    stockfish.postMessage('setoption name Ponder value true');
     stockfish.postMessage('setoption name Threads value 4');
-    stockfish.postMessage('setoption name Hash value 128');
+    stockfish.postMessage('setoption name Hash value 512');
     await sfWaitFor(m => m === 'readyok', 'isready');
-    document.getElementById('aiLog').textContent = 'Stockfish ready — skill 20, depth 20';
+    applyStrength(parseInt(document.getElementById('strengthSlider').value));
+    document.getElementById('aiLog').textContent = 'Stockfish 16 ready';
   } catch (err) {
-    document.getElementById('aiLog').textContent = 'Stockfish failed to load: ' + err.message;
-    console.error('Stockfish init error:', err);
+    document.getElementById('aiLog').textContent = 'Engine error: ' + err.message;
+    console.error('Stockfish init:', err);
   }
 }
 
-function getStockfishMove(fen) {
+function getMoveTime() {
+  const elo = parseInt(document.getElementById('strengthSlider').value);
+  return Math.round(200 + (elo - 500) / 3000 * 4800);
+}
+
+function applyStrength(elo) {
+  if (!stockfish) return;
+  if (elo >= 3500) {
+    stockfish.postMessage('setoption name UCI_LimitStrength value false');
+    stockfish.postMessage('setoption name Skill Level value 20');
+  } else {
+    stockfish.postMessage('setoption name UCI_LimitStrength value true');
+    stockfish.postMessage('setoption name UCI_Elo value ' + Math.min(3190, Math.max(1320, elo)));
+    if (elo < 1320) {
+      stockfish.postMessage('setoption name Skill Level value ' + Math.max(0, Math.round((elo - 500) / 820 * 10)));
+    }
+  }
+}
+
+function getStockfishMove(fen, playerMove) {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('Stockfish timeout after 30s')), 30000);
-    sfCallback = msg => {
-      if (msg.startsWith('bestmove')) {
-        clearTimeout(timer);
-        const mv = msg.split(' ')[1];
-        resolve(mv && mv !== '(none)' ? mv : null);
-        return true;
-      }
-      return false;
+    const timer = setTimeout(() => reject(new Error('Stockfish timeout')), 60000);
+
+    const onBestmove = msg => {
+      if (!msg.startsWith('bestmove')) return false;
+      clearTimeout(timer);
+      const parts = msg.split(' ');
+      sfPonderNext = (parts[2] === 'ponder' && parts[3]) ? parts[3] : null;
+      resolve(parts[1] !== '(none)' ? parts[1] : null);
+      return true;
     };
+
+    // Ponderhit: player played the move Stockfish was already pondering
+    if (sfPonder.active && playerMove && playerMove === sfPonder.move) {
+      sfPonder.active = false;
+      sfCallback = onBestmove;
+      stockfish.postMessage('ponderhit');
+      return;
+    }
+
+    // Stop any ongoing ponder, then start a fresh search
+    if (sfPonder.active) {
+      sfPonder.active = false;
+      sfCallback = msg => {
+        if (!msg.startsWith('bestmove')) return false;
+        sfCallback = onBestmove;
+        stockfish.postMessage('position fen ' + fen);
+        stockfish.postMessage('go movetime ' + getMoveTime());
+        return true;
+      };
+      stockfish.postMessage('stop');
+      return;
+    }
+
+    sfCallback = onBestmove;
     stockfish.postMessage('position fen ' + fen);
-    stockfish.postMessage('go depth 20');
+    stockfish.postMessage('go movetime ' + getMoveTime());
   });
 }
 
-// Claude explains the chosen move — cosmetic only, fires after move is played
+function startPondering(fenAfterEngineMove) {
+  if (!stockfish || !sfPonderNext || state.aiVsAiMode) return;
+  sfPonder.active = true;
+  sfPonder.move   = sfPonderNext;
+  sfPonderNext    = null;
+  stockfish.postMessage('position fen ' + fenAfterEngineMove + ' moves ' + sfPonder.move);
+  stockfish.postMessage('go ponder movetime ' + getMoveTime());
+}
+
+// Claude explains the chosen move — cosmetic, fires after move is played
 async function explainMove(moveStr, color, fen) {
   const apiKey = document.getElementById('apiKeyInput').value.trim() || ANTHROPIC_API_KEY;
   if (!apiKey || apiKey === 'YOUR_API_KEY_HERE') return;
@@ -433,7 +493,7 @@ async function explainMove(moveStr, color, fen) {
         max_tokens: 300,
         messages: [{
           role: 'user',
-          content: `You are a chess commentator. Stockfish (depth 20) just played ${moveStr} as ${color === 'w' ? 'White' : 'Black'} from this FEN: ${fen}\n\nIn 2-3 sentences explain the key idea behind this move — what threat it creates, what it defends, or what strategic goal it achieves. Be concise and insightful.`,
+          content: `You are a chess commentator. Stockfish 16 just played ${moveStr} as ${color === 'w' ? 'White' : 'Black'} from this FEN: ${fen}\n\nIn 2-3 sentences explain the key idea behind this move — what threat it creates, what it defends, or what strategic goal it achieves. Be concise and insightful.`,
         }],
       }),
     });
@@ -442,7 +502,7 @@ async function explainMove(moveStr, color, fen) {
       const text = data.content?.[0]?.text || '';
       if (text) document.getElementById('aiLog').textContent = text;
     }
-  } catch (_) { /* explanation is cosmetic — silently ignore errors */ }
+  } catch (_) { /* cosmetic — ignore errors */ }
 }
 
 function parseMoveStr(str) {
@@ -601,31 +661,35 @@ function handleSquareClick(idx) {
 }
 
 function doPlayerMove(move) {
+  const playerUci = sqName(move.from) + sqName(move.to) + (move.promotion ? move.promotion.toLowerCase() : '');
   if (!executeMove(move)) return;
   render();
   const go = checkGameOver();
   if (go.over) { handleGameOver(go); return; }
-  setTimeout(() => doAITurn('b'), 200);
+  setTimeout(() => doAITurn('b', playerUci), 200);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // AI turn
 // ─────────────────────────────────────────────────────────────────────────────
-async function doAITurn(color) {
+async function doAITurn(color, playerMove = null) {
   if (state.gameOver) return;
   if (!stockfish) {
-    document.getElementById('aiLog').textContent = 'Stockfish not ready yet — please wait.';
+    document.getElementById('aiLog').textContent = 'Stockfish not ready — please wait.';
     return;
   }
 
+  const isPonderHit = sfPonder.active && playerMove !== null && playerMove === sfPonder.move;
   document.getElementById('thinkingIndicator').classList.add('show');
-  document.getElementById('aiLog').textContent = 'Stockfish calculating (depth 20)...';
+  document.getElementById('aiLog').textContent = isPonderHit
+    ? 'Stockfish: ponderhit! (instant response)'
+    : 'Stockfish thinking (' + getMoveTime() + 'ms)...';
   render();
 
   const fen = toFEN(state);
 
   try {
-    const mvStr = await getStockfishMove(fen);
+    const mvStr = await getStockfishMove(fen, playerMove);
     document.getElementById('thinkingIndicator').classList.remove('show');
 
     if (!mvStr) { render(); return; }
@@ -643,13 +707,14 @@ async function doAITurn(color) {
     const go = checkGameOver();
     if (go.over) { handleGameOver(go); return; }
 
-    // Ask Claude to explain the move — non-blocking, purely cosmetic
+    // Start pondering the expected opponent reply (player vs AI only)
+    if (!state.aiVsAiMode) startPondering(toFEN(state));
+
     explainMove(mvStr, color, fen);
 
   } catch (err) {
     document.getElementById('thinkingIndicator').classList.remove('show');
     document.getElementById('aiLog').textContent = 'Engine error: ' + err.message;
-    // Fallback: random legal move
     const legal = legalMoves(state, color);
     if (legal.length) {
       const m = legal[Math.floor(Math.random() * legal.length)];
@@ -702,10 +767,15 @@ function handleGameOver(go) {
 // ─────────────────────────────────────────────────────────────────────────────
 function newGame() {
   state.aiVsAiRunning = false;
+  // Cancel any ongoing search or ponder
+  sfPonder     = { active: false, move: null };
+  sfPonderNext = null;
+  sfCallback   = null;
+  if (stockfish) stockfish.postMessage('stop');
   initState();
   document.getElementById('gameoverOverlay').classList.remove('show');
   document.getElementById('thinkingIndicator').classList.remove('show');
-  document.getElementById('aiLog').textContent = 'Stockfish ready — skill 20, depth 20';
+  document.getElementById('aiLog').textContent = stockfish ? 'Stockfish 16 ready' : 'Loading Stockfish 16...';
   render();
 }
 
@@ -741,6 +811,12 @@ document.getElementById('btnStartAI').addEventListener('click', () => {
     document.getElementById('btnStartAI').textContent = 'Stop';
     runAIvsAI();
   }
+});
+
+document.getElementById('strengthSlider').addEventListener('input', () => {
+  const elo = parseInt(document.getElementById('strengthSlider').value);
+  document.getElementById('eloLabel').textContent = elo;
+  applyStrength(elo);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

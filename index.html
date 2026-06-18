@@ -43,13 +43,21 @@
         <button id="btnStartAI">Start AI vs AI</button>
       </div>
 
+      <div class="panel-box">
+        <div class="label">Strength: <span id="eloLabel">3500</span> ELO</div>
+        <input type="range" id="strengthSlider" min="500" max="3500" step="50" value="3500" class="strength-slider">
+        <div class="strength-marks">
+          <span>500</span><span>1500</span><span>2500</span><span>3500</span>
+        </div>
+      </div>
+
       <div class="status-box">
         <div class="label">Turn</div>
         <div class="value" id="turnDisplay">White to move</div>
       </div>
 
       <div class="thinking-indicator" id="thinkingIndicator">
-        <span>Claude is thinking</span>
+        <span>Stockfish is thinking</span>
         <div class="dots"><span>.</span><span>.</span><span>.</span></div>
       </div>
 
