@@ -361,43 +361,66 @@ function checkGameOver() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Claude API
+// Stockfish engine
 // ─────────────────────────────────────────────────────────────────────────────
-async function askClaude(color) {
-  const apiKey = document.getElementById('apiKeyInput').value.trim() || ANTHROPIC_API_KEY;
-  const legal  = legalMoves(state, color);
-  if (!legal.length) return null;
+let stockfish = null;
+let sfCallback = null;
 
-  const legalStrs = legal.map(m => {
-    const s = sqName(m.from) + sqName(m.to);
-    return m.promotion ? s + m.promotion.toLowerCase() : s;
+function handleStockfishMsg(e) {
+  const msg = typeof e.data === 'string' ? e.data : String(e.data || '');
+  if (sfCallback && sfCallback(msg)) sfCallback = null;
+}
+
+function sfWaitFor(predicate, command) {
+  return new Promise(resolve => {
+    sfCallback = msg => { if (predicate(msg)) { resolve(); return true; } return false; };
+    if (command) stockfish.postMessage(command);
   });
+}
 
-  const systemPrompt =
-`You are a world-class chess grandmaster (2800+ ELO). You must find the absolute best move.
-
-Analyze the position to a depth of 20-30 moves ahead using these techniques:
-- Minimax with alpha-beta pruning (think through all variations)
-- Identify ALL tactical motifs: forks, pins, skewers, discovered attacks, zwischenzug, sacrifices
-- Calculate forcing lines first (checks, captures, threats)
-- Evaluate: material balance, king safety, pawn structure, piece activity, open files, outposts
-- Consider endgame transitions
-
-Think through the top 3 candidate moves and their main variations before deciding.
-Then respond with ONLY the best move in format: e2e4`;
-
-  const userPrompt =
-`Current position (FEN): ${toFEN(state)}
-You are playing: ${color === 'w' ? 'White' : 'Black'}
-Move history: ${state.moveListAlg.join(' ') || '(none)'}
-Legal moves available: ${legalStrs.join(', ')}
-
-Analyze deeply, then respond with ONLY the move in this exact format: e2e4
-(source square + destination square, e.g. e1g1 for kingside castling, e7e8q for promotion)`;
-
-  let raw = '';
+async function initStockfish() {
   try {
-    const response = await fetch('https://api.anthropic.com/v1/messages', {
+    document.getElementById('aiLog').textContent = 'Loading Stockfish engine...';
+    const blob = await fetch(
+      'https://cdnjs.cloudflare.com/ajax/libs/stockfish.js/10.0.2/stockfish.js'
+    ).then(r => r.blob());
+    stockfish = new Worker(URL.createObjectURL(blob));
+    stockfish.onmessage = handleStockfishMsg;
+    await sfWaitFor(m => m === 'uciok', 'uci');
+    stockfish.postMessage('setoption name Skill Level value 20');
+    stockfish.postMessage('setoption name Threads value 4');
+    stockfish.postMessage('setoption name Hash value 128');
+    await sfWaitFor(m => m === 'readyok', 'isready');
+    document.getElementById('aiLog').textContent = 'Stockfish ready — skill 20, depth 20';
+  } catch (err) {
+    document.getElementById('aiLog').textContent = 'Stockfish failed to load: ' + err.message;
+    console.error('Stockfish init error:', err);
+  }
+}
+
+function getStockfishMove(fen) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('Stockfish timeout after 30s')), 30000);
+    sfCallback = msg => {
+      if (msg.startsWith('bestmove')) {
+        clearTimeout(timer);
+        const mv = msg.split(' ')[1];
+        resolve(mv && mv !== '(none)' ? mv : null);
+        return true;
+      }
+      return false;
+    };
+    stockfish.postMessage('position fen ' + fen);
+    stockfish.postMessage('go depth 20');
+  });
+}
+
+// Claude explains the chosen move — cosmetic only, fires after move is played
+async function explainMove(moveStr, color, fen) {
+  const apiKey = document.getElementById('apiKeyInput').value.trim() || ANTHROPIC_API_KEY;
+  if (!apiKey || apiKey === 'YOUR_API_KEY_HERE') return;
+  try {
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -407,33 +430,19 @@ Analyze deeply, then respond with ONLY the move in this exact format: e2e4
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 4000,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userPrompt }],
+        max_tokens: 300,
+        messages: [{
+          role: 'user',
+          content: `You are a chess commentator. Stockfish (depth 20) just played ${moveStr} as ${color === 'w' ? 'White' : 'Black'} from this FEN: ${fen}\n\nIn 2-3 sentences explain the key idea behind this move — what threat it creates, what it defends, or what strategic goal it achieves. Be concise and insightful.`,
+        }],
       }),
     });
-
-    if (!response.ok) {
-      raw = 'API error: ' + (await response.text());
-    } else {
-      const data = await response.json();
-      raw = data.content?.[0]?.text || '';
+    if (resp.ok) {
+      const data = await resp.json();
+      const text = data.content?.[0]?.text || '';
+      if (text) document.getElementById('aiLog').textContent = text;
     }
-  } catch (e) {
-    raw = 'Fetch error: ' + e.message;
-  }
-
-  document.getElementById('aiLog').textContent = raw;
-
-  const match = raw.match(/\b([a-h][1-8][a-h][1-8][qrbn]?)\b/i);
-  if (match) {
-    const mv = match[1].toLowerCase();
-    if (legalStrs.includes(mv)) return mv;
-    console.warn('Claude move not in legal list:', mv, '— random fallback');
-  }
-  const fb = legalStrs[Math.floor(Math.random() * legalStrs.length)];
-  console.warn('Random fallback:', fb);
-  return fb;
+  } catch (_) { /* explanation is cosmetic — silently ignore errors */ }
 }
 
 function parseMoveStr(str) {
@@ -604,25 +613,53 @@ function doPlayerMove(move) {
 // ─────────────────────────────────────────────────────────────────────────────
 async function doAITurn(color) {
   if (state.gameOver) return;
+  if (!stockfish) {
+    document.getElementById('aiLog').textContent = 'Stockfish not ready yet — please wait.';
+    return;
+  }
+
   document.getElementById('thinkingIndicator').classList.add('show');
+  document.getElementById('aiLog').textContent = 'Stockfish calculating (depth 20)...';
   render();
 
-  const mvStr = await askClaude(color);
-  document.getElementById('thinkingIndicator').classList.remove('show');
-  if (!mvStr) { render(); return; }
+  const fen = toFEN(state);
 
-  const mv = parseMoveStr(mvStr);
-  if (!mv) { render(); return; }
+  try {
+    const mvStr = await getStockfishMove(fen);
+    document.getElementById('thinkingIndicator').classList.remove('show');
 
-  // Ensure promotion piece is set for pawn reaching back rank
-  const piece = state.board[mv.from];
-  if (piece && piece[1] === 'P' && (row(mv.to) === 0 || row(mv.to) === 7) && !mv.promotion)
-    mv.promotion = 'Q';
+    if (!mvStr) { render(); return; }
 
-  executeMove(mv);
-  render();
-  const go = checkGameOver();
-  if (go.over) handleGameOver(go);
+    const mv = parseMoveStr(mvStr);
+    if (!mv) { render(); return; }
+
+    const piece = state.board[mv.from];
+    if (piece && piece[1] === 'P' && (row(mv.to) === 0 || row(mv.to) === 7) && !mv.promotion)
+      mv.promotion = 'Q';
+
+    executeMove(mv);
+    render();
+
+    const go = checkGameOver();
+    if (go.over) { handleGameOver(go); return; }
+
+    // Ask Claude to explain the move — non-blocking, purely cosmetic
+    explainMove(mvStr, color, fen);
+
+  } catch (err) {
+    document.getElementById('thinkingIndicator').classList.remove('show');
+    document.getElementById('aiLog').textContent = 'Engine error: ' + err.message;
+    // Fallback: random legal move
+    const legal = legalMoves(state, color);
+    if (legal.length) {
+      const m = legal[Math.floor(Math.random() * legal.length)];
+      if (m.piece[1] === 'P' && (row(m.to) === 0 || row(m.to) === 7)) m.promotion = 'Q';
+      executeMove(m);
+      render();
+      const go = checkGameOver();
+      if (go.over) handleGameOver(go);
+    }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -668,7 +705,7 @@ function newGame() {
   initState();
   document.getElementById('gameoverOverlay').classList.remove('show');
   document.getElementById('thinkingIndicator').classList.remove('show');
-  document.getElementById('aiLog').textContent = "(Claude's raw response appears here)";
+  document.getElementById('aiLog').textContent = 'Stockfish ready — skill 20, depth 20';
   render();
 }
 
@@ -712,3 +749,4 @@ document.getElementById('btnStartAI').addEventListener('click', () => {
 initState();
 renderLabels();
 render();
+initStockfish();
