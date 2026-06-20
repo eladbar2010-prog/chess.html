@@ -1,105 +1,219 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="he">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Chess vs Claude AI</title>
+  <title>שחמט AI</title>
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 
-  <h1>&#9822; Chess vs Claude AI &#9816;</h1>
-
-  <div class="api-key-bar">
-    <label for="apiKeyInput">API Key:</label>
-    <input type="password" id="apiKeyInput" placeholder="sk-ant-...">
+  <!-- ─── Main Menu ─── -->
+  <div id="mainMenu">
+    <div class="menu-inner">
+      <h1 class="menu-title">♟ שחמט AI</h1>
+      <nav class="menu-buttons" dir="rtl">
+        <button class="menu-btn" onclick="showPlaceholder('ניתוח')">ניתוח</button>
+        <button class="menu-btn" onclick="showOpeningsList()">פתיחות</button>
+        <button class="menu-btn menu-btn--primary" onclick="showGame()">שחק נגד בוט</button>
+        <button class="menu-btn" onclick="showPlaceholder('סיומים')">סיומים</button>
+      </nav>
+    </div>
   </div>
 
-  <div class="main-layout">
+  <!-- ─── Placeholder Screen ─── -->
+  <div id="placeholderScreen" dir="rtl">
+    <button class="back-btn" onclick="showMenu()">→ תפריט</button>
+    <div class="placeholder-inner">
+      <h2 id="placeholderTitle"></h2>
+      <p class="coming-soon">בקרוב...</p>
+    </div>
+  </div>
 
-    <div class="board-section">
-      <div class="board-wrap">
-        <div class="rank-labels" id="rankLabels"></div>
-        <div>
-          <div id="board"></div>
-          <div class="file-labels" id="fileLabels"></div>
+  <!-- ─── Openings Screen ─── -->
+  <div id="openingsScreen">
+
+    <!-- List View -->
+    <div id="openingsListView">
+      <button class="back-btn game-back-btn" onclick="showMenu()">← תפריט</button>
+      <div class="openings-list-wrap" dir="rtl">
+        <h2 class="ob-screen-title">פתיחות שחמט</h2>
+        <input type="search" id="openingsSearch" class="openings-search"
+               placeholder="חפש פתיחה..." dir="rtl" oninput="filterOpenings(this.value)">
+        <div class="cat-tabs">
+          <button class="cat-tab active" onclick="setCatFilter('all',this)">הכל</button>
+          <button class="cat-tab" onclick="setCatFilter('king',this)">1.e4</button>
+          <button class="cat-tab" onclick="setCatFilter('queen',this)">1.d4</button>
+          <button class="cat-tab" onclick="setCatFilter('flank',this)">פתיחות צד</button>
+        </div>
+        <div id="openingsGrid" class="openings-grid"></div>
+      </div>
+    </div>
+
+    <!-- Detail View -->
+    <div id="openingDetailView" style="display:none">
+      <button class="back-btn game-back-btn" onclick="showOpeningsList()">← פתיחות</button>
+      <div class="opening-detail-wrap">
+
+        <div class="ob-board-col">
+          <div id="openingBoard" class="ob-board-grid"></div>
+          <div id="demoControls" class="ob-demo-controls">
+            <button class="ob-btn" onclick="prevDemoMove()">⏮</button>
+            <button class="ob-btn ob-play-btn" onclick="toggleAutoPlay()">▶</button>
+            <button class="ob-btn" onclick="nextDemoMove()">⏭</button>
+          </div>
+          <div id="practiceControls" class="ob-demo-controls" style="display:none">
+            <button class="ob-btn" onclick="hintPractice()">💡 רמז</button>
+            <button class="ob-btn" onclick="resetPractice()">↺ איפוס</button>
+            <button class="ob-btn ob-btn-flip" id="btnFlipPractice" onclick="togglePracticeColor()">⬛ שחק כשחור</button>
+          </div>
+          <div id="practiceMsg" class="practice-msg"></div>
+        </div>
+
+        <div class="ob-info-col">
+          <h2 id="obDetailTitle" class="ob-detail-title"></h2>
+          <p  id="obDetailDesc"  class="ob-detail-desc"></p>
+
+          <div class="ob-mode-row">
+            <button id="btnObDemo"     class="ob-mode-btn active" onclick="switchObMode('demo')">👁 צפייה</button>
+            <button id="btnObPractice" class="ob-mode-btn"        onclick="switchObMode('practice')">✏ תרגול</button>
+          </div>
+
+          <div id="obVariationTabs" class="ob-var-tabs"></div>
+
+          <div class="ob-label">מהלכים</div>
+          <div id="obMoveList" class="ob-move-list"></div>
+          <div id="obMoveExpl" class="ob-move-expl"></div>
+
+          <div id="obWhatIf" class="ob-whatif-panel" style="display:none">
+            <div class="ob-whatif-header">
+              <span>🔍 מה אם?</span>
+              <button class="ob-whatif-close" onclick="closeWhatIf()">✕</button>
+            </div>
+            <div id="obWhatIfContent"></div>
+          </div>
+
+          <div id="yellowChoice" class="ob-yellow-choice" style="display:none">
+            <div id="yellowChoiceMsg"></div>
+            <div class="yellow-choice-btns">
+              <button onclick="handleYellowChoice('continue')">המשך בקו זה</button>
+              <button onclick="handleYellowChoice('revert')">↩ חזור לקו הראשי</button>
+            </div>
+          </div>
+
+          <div id="obComplete" class="ob-complete">
+            <div class="ob-complete-icon">🎉</div>
+            <div class="ob-complete-text">סיימת בהצלחה!</div>
+            <div class="ob-complete-btns">
+              <button onclick="resetPractice()">תרגל שוב</button>
+              <button onclick="showOpeningsList()">חזרה לרשימה</button>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+  </div><!-- /#openingsScreen -->
+
+  <!-- ─── Game Screen ─── -->
+  <div id="gameScreen">
+    <button class="back-btn game-back-btn" onclick="showMenu()">← Menu</button>
+
+    <h1>&#9822; Chess vs Stockfish &#9816;</h1>
+
+    <div class="api-key-bar">
+      <label for="apiKeyInput">API Key:</label>
+      <input type="password" id="apiKeyInput" placeholder="sk-ant-...">
+    </div>
+
+    <div class="main-layout">
+
+      <div class="board-section">
+        <div class="board-wrap">
+          <div class="rank-labels" id="rankLabels"></div>
+          <div>
+            <div id="board"></div>
+            <div class="file-labels" id="fileLabels"></div>
+          </div>
         </div>
       </div>
-    </div>
 
-    <div class="side-panel">
+      <div class="side-panel">
 
-      <div class="controls">
-        <button id="btnNew">New Game</button>
-        <button id="btnUndo">Undo</button>
-        <div class="mode-toggle">
-          <span>Player vs AI</span>
-          <div class="toggle-switch" id="modeToggle"></div>
-          <span>AI vs AI</span>
+        <div class="controls">
+          <button id="btnNew">New Game</button>
+          <button id="btnUndo">Undo</button>
+          <div class="mode-toggle">
+            <span>Player vs AI</span>
+            <div class="toggle-switch" id="modeToggle"></div>
+            <span>AI vs AI</span>
+          </div>
         </div>
-      </div>
 
-      <div id="aiVsAiControls" style="display:none">
-        <button id="btnStartAI">Start AI vs AI</button>
-      </div>
-
-      <div class="panel-box">
-        <div class="label">Strength: <span id="eloLabel">3500</span> ELO</div>
-        <input type="range" id="strengthSlider" min="500" max="3500" step="50" value="3500" class="strength-slider">
-        <div class="strength-marks">
-          <span>500</span><span>1500</span><span>2500</span><span>3500</span>
+        <div id="aiVsAiControls" style="display:none">
+          <button id="btnStartAI">Start AI vs AI</button>
         </div>
-      </div>
 
-      <div class="status-box">
-        <div class="label">Turn</div>
-        <div class="value" id="turnDisplay">White to move</div>
-      </div>
+        <div class="panel-box">
+          <div class="label">Strength: <span id="eloLabel">3500</span> ELO</div>
+          <input type="range" id="strengthSlider" min="500" max="3500" step="50" value="3500" class="strength-slider">
+          <div class="strength-marks">
+            <span>500</span><span>1500</span><span>2500</span><span>3500</span>
+          </div>
+        </div>
 
-      <div class="thinking-indicator" id="thinkingIndicator">
-        <span>Stockfish is thinking</span>
-        <div class="dots"><span>.</span><span>.</span><span>.</span></div>
-      </div>
+        <div class="status-box">
+          <div class="label">Turn</div>
+          <div class="value" id="turnDisplay">White to move</div>
+        </div>
 
-      <div class="panel-box">
-        <div class="label">Move History</div>
-        <div class="move-history" id="moveHistory"></div>
-      </div>
+        <div class="thinking-indicator" id="thinkingIndicator">
+          <span>Stockfish is thinking</span>
+          <div class="dots"><span>.</span><span>.</span><span>.</span></div>
+        </div>
 
-      <div class="panel-box">
-        <div class="label">Captured by White</div>
-        <div class="captured-pieces" id="capturedByWhite"></div>
-      </div>
+        <div class="panel-box">
+          <div class="label">Move History</div>
+          <div class="move-history" id="moveHistory"></div>
+        </div>
 
-      <div class="panel-box">
-        <div class="label">Captured by Black</div>
-        <div class="captured-pieces" id="capturedByBlack"></div>
-      </div>
+        <div class="panel-box">
+          <div class="label">Captured by White</div>
+          <div class="captured-pieces" id="capturedByWhite"></div>
+        </div>
 
-      <div class="panel-box">
-        <div class="label">AI Thinking Log</div>
-        <div class="ai-log" id="aiLog">(Claude's raw response appears here)</div>
-      </div>
+        <div class="panel-box">
+          <div class="label">Captured by Black</div>
+          <div class="captured-pieces" id="capturedByBlack"></div>
+        </div>
 
+        <div class="panel-box">
+          <div class="label">AI Thinking Log</div>
+          <div class="ai-log" id="aiLog">(engine log)</div>
+        </div>
+
+      </div>
     </div>
-  </div>
 
-  <!-- Promotion Modal -->
-  <div class="modal-overlay" id="promoOverlay">
-    <div class="modal">
-      <h3>Promote Pawn</h3>
-      <div class="promo-pieces" id="promoPieces"></div>
+    <!-- Promotion Modal -->
+    <div class="modal-overlay" id="promoOverlay">
+      <div class="modal">
+        <h3>Promote Pawn</h3>
+        <div class="promo-pieces" id="promoPieces"></div>
+      </div>
     </div>
-  </div>
 
-  <!-- Game Over Modal -->
-  <div class="gameover-overlay" id="gameoverOverlay">
-    <div class="gameover-modal">
-      <h2 id="gameoverTitle"></h2>
-      <p id="gameoverMsg"></p>
-      <button id="btnGameoverNew">New Game</button>
+    <!-- Game Over Modal -->
+    <div class="gameover-overlay" id="gameoverOverlay">
+      <div class="gameover-modal">
+        <h2 id="gameoverTitle"></h2>
+        <p id="gameoverMsg"></p>
+        <button id="btnGameoverNew">New Game</button>
+      </div>
     </div>
-  </div>
+
+  </div><!-- /#gameScreen -->
 
   <script src="app.js"></script>
 </body>
